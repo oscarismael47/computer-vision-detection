@@ -6,14 +6,15 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 MARGIN = 10  # pixels
-FONT_SIZE = 1
-FONT_THICKNESS = 1
+FONT_SIZE = 2
+FONT_THICKNESS = 2
 HANDEDNESS_TEXT_COLOR = (88, 205, 54) # vibrant green
-
 
 mp_hands = mp.tasks.vision.HandLandmarksConnections
 mp_drawing = mp.tasks.vision.drawing_utils
 mp_drawing_styles = mp.tasks.vision.drawing_styles
+LANDMARK_DRAWING_SPEC = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=5, circle_radius=2)
+CONNECTION_DRAWING_SPEC = mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=5, circle_radius=2)
 
 def draw_landmarks_on_image(bgr_image, detection_result):
   hand_landmarks_list = detection_result.hand_landmarks
@@ -30,8 +31,8 @@ def draw_landmarks_on_image(bgr_image, detection_result):
       annotated_image,
       hand_landmarks,
       mp_hands.HAND_CONNECTIONS,
-      mp_drawing_styles.get_default_hand_landmarks_style(),
-      mp_drawing_styles.get_default_hand_connections_style())
+      LANDMARK_DRAWING_SPEC,
+      CONNECTION_DRAWING_SPEC)
 
     # Get the top left corner of the detected hand's bounding box.
     height, width, _ = annotated_image.shape
@@ -47,26 +48,62 @@ def draw_landmarks_on_image(bgr_image, detection_result):
 
   return annotated_image
 
-# STEP 2: Create an HandLandmarker object.
+# STEP 2: Create a HandLandmarker object for video processing.
 base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
-options = vision.HandLandmarkerOptions(base_options=base_options,
-                                       num_hands=2)
+options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO,
+    num_hands=2)
 detector = vision.HandLandmarker.create_from_options(options)
 
-# STEP 3: Load the input image.
-image = mp.Image.create_from_file("test.png")
+# STEP 3: Load the input video.
+capture = cv2.VideoCapture("test_1.MP4")
+if not capture.isOpened():
+  raise FileNotFoundError("Could not open test_1.MP4")
 
-# STEP 4: Detect hand landmarks from the input image.
-detection_result = detector.detect(image)
+video_fps = capture.get(cv2.CAP_PROP_FPS)
+if not video_fps or video_fps <= 0:
+  video_fps = 30.0
 
-# STEP 5: Process the classification result. In this case, visualize it.
-image_data = image.numpy_view()
-if image_data.shape[-1] == 4:
-  image_data = cv2.cvtColor(image_data, cv2.COLOR_RGBA2BGR)
-else:
-  image_data = cv2.cvtColor(image_data, cv2.COLOR_RGB2BGR)
+frame_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+output_path = "annotated_test_1.mp4"
+video_writer = cv2.VideoWriter(
+    output_path,
+    cv2.VideoWriter_fourcc(*"mp4v"),
+    video_fps,
+    (frame_width, frame_height))
 
-annotated_image = draw_landmarks_on_image(image_data, detection_result)
+if not video_writer.isOpened():
+  capture.release()
+  raise RuntimeError(f"Could not open video writer for {output_path}")
 
-cv2.imshow('Annotated Image', annotated_image)
-cv2.waitKey(0)
+frame_index = 0
+
+# STEP 4: Detect hand landmarks from each video frame.
+while True:
+  success, frame_bgr = capture.read()
+  if not success:
+    break
+
+  frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+  mp_frame = mp.Image(
+      image_format=mp.ImageFormat.SRGB,
+      data=frame_rgb)
+
+  timestamp_ms = int(frame_index * 1000 / video_fps)
+  detection_result = detector.detect_for_video(mp_frame, timestamp_ms)
+
+  # STEP 5: Visualize the detection result on the current frame.
+  annotated_frame = draw_landmarks_on_image(frame_bgr, detection_result)
+  video_writer.write(annotated_frame)
+  cv2.imshow('Annotated Video', annotated_frame)
+
+  if cv2.waitKey(1) & 0xFF == ord('q'):
+    break
+
+  frame_index += 1
+
+capture.release()
+video_writer.release()
+cv2.destroyAllWindows()
